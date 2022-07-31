@@ -676,13 +676,23 @@ void StrokeEngine::setFrame(float depth, float speed, float acceleration) {
     }
 }
 
+bool StrokeEngine::_homeSwitchReached() {
+    // Read the value three time to make sure it was not a noise.
+    for (int i = 0; i < 3; i++) {
+        if (digitalRead(_homeingPin) == _homeingActiveLow) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void StrokeEngine::_homingProcedure() {
     // Set feedrate for homing
     servo->setSpeedInHz(_homeingSpeed);       
     servo->setAcceleration(_maxStepAcceleration / 10);    
 
     // Check if we are already at the homing switch
-    if (digitalRead(_homeingPin) == !_homeingActiveLow) {
+    if (_homeSwitchReached()) {
         //back off 5 mm from switch
         servo->move(_motor->stepsPerMillimeter * 2 * _physics->keepoutBoundary * _homeingToBack);
 
@@ -704,7 +714,7 @@ void StrokeEngine::_homingProcedure() {
     while (servo->isRunning()) {
 
         // Switch is active low
-        if (digitalRead(_homeingPin) == !_homeingActiveLow) {
+        if (_homeSwitchReached()) {
 
             // Set home position
             if (_homeingToBack == 1) {

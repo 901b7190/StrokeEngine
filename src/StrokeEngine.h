@@ -423,6 +423,7 @@ class StrokeEngine {
         float _sensation;
         bool _applyUpdate = false;
         motionParameter _nextFrame;
+        bool _homeSwitchReached();
         static void _homingProcedureImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_homingProcedure(); }
         void _homingProcedure();
         static void _strokingImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_stroking(); }
