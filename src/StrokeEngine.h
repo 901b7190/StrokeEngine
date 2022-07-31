@@ -228,6 +228,16 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
+          @brief  Creates a FreeRTOS task to run in streaming mode. Only valid in
+          state READY. If the task is running, state is STREAMING.
+          @return TRUE when task was created and stremaing mode starts, FALSE on
+          failure.
+        */
+        /**************************************************************************/
+        bool startStreaming();
+
+        /**************************************************************************/
+        /*!
           @brief  Enable the servo/stepper and do the homing procedure. Drives towards
           the endstop with HOMING_SPEED. Function is non-blocking and backed by a task.
           Optionally a callback can be given to receive feedback if homing succeeded 
@@ -382,6 +392,17 @@ class StrokeEngine {
         /**************************************************************************/
         void registerTelemetryCallback(void(*callbackTelemetry)(float, float, bool));
 
+        /**************************************************************************/
+        /*!
+          @brief  In STREAMING mode, sets the frame to be executed.
+          @param depth Depth of the next frame in mm.
+          @param speed Speed of the next frame in mm/s.
+          @param acceleration Acceleration of the next frame in mm/s².
+          void callbackTelemetry(float position, float speed, bool clipping)
+        */
+        /**************************************************************************/
+        void setFrame(float depth, float speed, float acceleration);
+
     protected:
         ServoState _state = UNDEFINED;
         motorProperties *_motor;
@@ -401,6 +422,7 @@ class StrokeEngine {
         float _timeOfStroke;
         float _sensation;
         bool _applyUpdate = false;
+        motionParameter _nextFrame;
         static void _homingProcedureImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_homingProcedure(); }
         void _homingProcedure();
         static void _strokingImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_stroking(); }
@@ -411,6 +433,7 @@ class StrokeEngine {
         TaskHandle_t _taskHomingHandle = NULL;
         TaskHandle_t _taskStreamingHandle = NULL;
         SemaphoreHandle_t _patternMutex = xSemaphoreCreateMutex();
+        SemaphoreHandle_t _streamingSemaphore = xSemaphoreCreateBinary();
         void _applyMotionProfile(motionParameter* motion);
         void(*_callBackHomeing)(bool) = NULL;
         void(*_callbackTelemetry)(float, float, bool) = NULL;

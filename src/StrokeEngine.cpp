@@ -248,7 +248,7 @@ int StrokeEngine::getPattern() {
 
 bool StrokeEngine::startPattern() {
     // Only valid if state is ready
-    if (_state == READY || _state == SETUPDEPTH) {
+    if (_state == READY || _state == SETUPDEPTH || _state == STREAMING) {
 
         // Stop current move, should one be pending (moveToMax or moveToMin)
         if (servo->isRunning()) {
@@ -315,7 +315,7 @@ bool StrokeEngine::startPattern() {
 
 void StrokeEngine::stopMotion() {
     // only valid when 
-    if (_state == PATTERN || _state == SETUPDEPTH) {
+    if (_state == PATTERN || _state == SETUPDEPTH || _state == STREAMING) {
         // Set state
         _state = READY;
 
@@ -340,6 +340,61 @@ void StrokeEngine::stopMotion() {
 #ifdef DEBUG_TALKATIVE
     Serial.println("Stroke Engine State: " + verboseState[_state]);
 #endif
+}
+
+bool StrokeEngine::startStreaming() {
+    // Only valid if state is ready
+    if (_state == READY || _state == PATTERN) {
+
+        // Stop current move, should one be pending (moveToMax or moveToMin)
+        if (servo->isRunning()) {
+            // Stop servo motor as fast as legally allowed
+            servo->setAcceleration(_maxStepAcceleration);
+            servo->applySpeedAcceleration();
+            servo->stopMove();
+        }
+
+        // Set state to STREAMING
+        _state = STREAMING;
+
+        // Reset position
+        setFrame(
+            0,
+            _homeingSpeed / _motor->stepsPerMillimeter,
+            _maxStepAcceleration / _motor->stepsPerMillimeter
+        );
+
+        if (_taskStreamingHandle == NULL) {
+            // Create Streaming Task
+            xTaskCreatePinnedToCore(
+                this->_streamingImpl,    // Function that should be called
+                "Streaming",             // Name of the task (for debugging)
+                4096,                    // Stack size (bytes)
+                this,                    // Pass reference to this class instance
+                24,                      // Pretty high task priority
+                &_taskStreamingHandle,   // Task handle
+                1                        // Pin to application core
+            );
+        } else {
+            // Resume task, if it already exists
+            vTaskResume(_taskStreamingHandle);
+        }
+
+#ifdef DEBUG_TALKATIVE
+        Serial.println("Started streaming task");
+        Serial.println("Stroke Engine State: " + verboseState[_state]);
+#endif
+
+        return true;
+
+    } else {
+
+#ifdef DEBUG_TALKATIVE
+        Serial.println("Failed to start streaming mode");
+#endif
+        return false;
+
+    }
 }
 
 void StrokeEngine::enableAndHome(endstopProperties *endstop, void(*callBackHoming)(bool), float speed) {
@@ -590,6 +645,37 @@ void StrokeEngine::registerTelemetryCallback(void(*callbackTelemetry)(float, flo
     _callbackTelemetry = callbackTelemetry;
 }
 
+void StrokeEngine::setFrame(float depth, float speed, float acceleration) {
+    if (_state != STREAMING) {
+#ifdef DEBUG_TALKATIVE
+        Serial.println("Refusing to set next frame as not in STREAMING mode.");
+#endif
+    } else {
+        // Convert depth from mm into steps
+        // Constrain stroke between minStep and maxStep
+        depth = constrain(depth * _motor->stepsPerMillimeter, _minStep, _maxStep);
+
+        // Convert speed from mm/s into steps/s
+        speed = constrain(speed * _motor->stepsPerMillimeter, 0., _maxStepPerSecond);
+
+        // Convert acceleration from mm/s² into steps/s²
+        acceleration = constrain(acceleration * _motor->stepsPerMillimeter, 0., _maxStepAcceleration);
+
+#ifdef DEBUG_TALKATIVE
+        Serial.println("Streaming depth: " + String(depth));
+        Serial.println("Streaming speed: " + String(speed));
+        Serial.println("Streaming accel: " + String(acceleration));
+#endif
+        _nextFrame = motionParameter{
+            .stroke = int(depth),
+            .speed = int(speed),
+            .acceleration = int(acceleration),
+            .skip = false
+        };
+        xSemaphoreGive(_streamingSemaphore);
+    }
+}
+
 void StrokeEngine::_homingProcedure() {
     // Set feedrate for homing
     servo->setSpeedInHz(_homeingSpeed);       
@@ -751,16 +837,36 @@ void StrokeEngine::_stroking() {
 }
 
 void StrokeEngine::_streaming() {
+    motionParameter frame;
 
-    while(1) { // infinite loop
+    while(1) {
+        // Get notification of frame change from other cores.
+        BaseType_t semResult = xSemaphoreTake(_streamingSemaphore, 10000 / portTICK_PERIOD_MS);
 
         // Suspend task, if not in STREAMING state
         if (_state != STREAMING) {
             vTaskSuspend(_taskStreamingHandle);
+            continue;
         }
         
-        // Delay 10ms 
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        if (semResult == pdFALSE) {
+            continue;
+        }
+
+        // Copy frame to avoid any race on its properties.
+        frame = _nextFrame;
+
+        // Increase deceleration if required to avoid crash
+        if (servo->getAcceleration() > frame.acceleration) {
+#ifdef DEBUG_CLIPPING
+            Serial.print("Crash avoidance! Set Acceleration from " + String(frame.acceleration));
+            Serial.println(" to " + String(servo->getAcceleration()));
+#endif
+            frame.acceleration = servo->getAcceleration();
+        }
+
+        // Apply new trapezoidal motion profile to servo
+        _applyMotionProfile(&frame);
     }
 }
 
@@ -849,4 +955,3 @@ void StrokeEngine::_setupDepths() {
     Serial.println("setup new depth: " + String(depth));
 #endif
 }
-
